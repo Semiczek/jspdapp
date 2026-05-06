@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "jspd-employee-app",
+    "name": "My JSPD",
     "slug": "jspd-employee-app",
-    "version": "1.0.0",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "jspdemployeeapp",
@@ -12,6 +12,8 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.jspd.work",
+      "versionCode": 8,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -43,6 +45,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "49402440-9064-405e-98c7-db78c6c35e50"
+      }
+    },
+    "owner": "semiczek"
   }
 }

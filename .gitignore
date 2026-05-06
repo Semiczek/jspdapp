@@ -32,6 +32,10 @@ yarn-error.*
 
 # local env files
 .env*.local
+credentials.json
+credentials/
+expo-lan.log
+expo-tunnel.log
 
 # typescript
 *.tsbuildinfo
