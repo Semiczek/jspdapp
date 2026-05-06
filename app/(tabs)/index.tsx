@@ -65,6 +65,11 @@ type SelectedJobDetail = {
   work_completed_at: string | null
 }
 
+type SelectedJobTarget = {
+  assignmentId: string
+  jobId: string
+}
+
 type SelectedChecklistItem = {
   id: string
   label: string
@@ -147,6 +152,27 @@ function getSingleJob(rawJobs: any): any | null {
   return rawJobs ?? null
 }
 
+function getChildJobs(rawJob: any): any[] {
+  if (!Array.isArray(rawJob?.child_jobs)) return []
+  return rawJob.child_jobs.filter(Boolean)
+}
+
+function resolveDisplayJobs(rawJob: any): any[] {
+  if (!rawJob) return []
+
+  if (rawJob.parent_job_id) {
+    return [rawJob]
+  }
+
+  const childJobs = getChildJobs(rawJob)
+
+  if (childJobs.length > 0) {
+    return childJobs
+  }
+
+  return [rawJob]
+}
+
 async function isOnline() {
   const state = await NetInfo.fetch()
   return !!state.isConnected
@@ -168,6 +194,27 @@ function buildLocalShiftId() {
   return `local_shift_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }
 
+function shouldShowJobOnHome(row: {
+  work_started_at: string | null
+  work_completed_at: string | null
+}, job: any, companyId: string, todayDateKey: string) {
+
+  if (!job || job.company_id !== companyId) {
+    return false
+  }
+
+  const assignmentState = getAssignmentWorkState({
+    work_started_at: row.work_started_at ?? null,
+    work_completed_at: row.work_completed_at ?? null,
+  })
+
+  if (assignmentState === 'started') {
+    return true
+  }
+
+  return jobOverlapsDay(job.start_at ?? null, job.end_at ?? null, todayDateKey)
+}
+
 export default function HomeScreen() {
   const router = useRouter()
   const { user, profile, profileId, companyId, syncTick, isAdmin, role } = useAppSession()
@@ -184,7 +231,7 @@ export default function HomeScreen() {
 
   const [payrollBoxOpen, setPayrollBoxOpen] = useState(false)
 
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+  const [selectedJobTarget, setSelectedJobTarget] = useState<SelectedJobTarget | null>(null)
   const [selectedJobDetail, setSelectedJobDetail] =
     useState<SelectedJobDetail | null>(null)
   const [selectedChecklistItems, setSelectedChecklistItems] = useState<
@@ -222,8 +269,8 @@ export default function HomeScreen() {
       await loadActiveShift()
       await loadTodayJobs()
 
-      if (selectedJobId) {
-        await loadSelectedJobDetail(selectedJobId)
+      if (selectedJobTarget) {
+        await loadSelectedJobDetail(selectedJobTarget.jobId, selectedJobTarget.assignmentId)
       }
     } finally {
       setManualSyncing(false)
@@ -630,8 +677,7 @@ export default function HomeScreen() {
       .map((row: any) => {
         const job = getSingleJob(row.jobs)
 
-        if (!job || job.company_id !== companyId) return null
-        if (!jobOverlapsDay(job.start_at ?? null, job.end_at ?? null, todayDateKey)) {
+        if (!shouldShowJobOnHome(row, job, companyId, todayDateKey)) {
           return null
         }
 
@@ -650,12 +696,67 @@ export default function HomeScreen() {
       })
       .filter((item): item is AssignedJob => item !== null)
 
-    setJobs(mapped)
-    await setCacheItem(todayJobsCacheKey, mapped)
+    const directlyAssignedJobIds = new Set(mapped.map((item) => item.id))
+    const parentJobIds = mapped.map((item) => item.id)
+    let normalizedJobs = mapped
+
+    if (parentJobIds.length > 0) {
+      const { data: childJobsData, error: childJobsError } = await supabase
+        .from('jobs')
+        .select(
+          'id, parent_job_id, title, description, address, start_at, end_at, status, company_id'
+        )
+        .in('parent_job_id', parentJobIds)
+
+      if (childJobsError) {
+        console.error('Chyba pÅ™i naÄÃ­tÃ¡nÃ­ pÅ™idruÅ¾enÃ½ch zakÃ¡zek:', childJobsError)
+      } else if ((childJobsData ?? []).length > 0) {
+        const childJobsByParentId = new Map<string, any[]>()
+
+        for (const childJob of childJobsData ?? []) {
+          if (!childJob.parent_job_id) continue
+
+          const current = childJobsByParentId.get(childJob.parent_job_id) ?? []
+          current.push(childJob)
+          childJobsByParentId.set(childJob.parent_job_id, current)
+        }
+
+        normalizedJobs = mapped.flatMap((item) => {
+          const childJobs = childJobsByParentId.get(item.id) ?? []
+
+          if (childJobs.length === 0) {
+            return [item]
+          }
+
+          return childJobs
+            .filter((childJob) => !directlyAssignedJobIds.has(childJob.id))
+            .filter((childJob) => shouldShowJobOnHome(item, childJob, companyId, todayDateKey))
+            .map((childJob) => ({
+              ...item,
+              id: childJob.id,
+              title: childJob.title ?? item.title,
+              description: childJob.description ?? item.description,
+              address: childJob.address ?? item.address,
+              start_at: childJob.start_at ?? item.start_at,
+              end_at: childJob.end_at ?? item.end_at,
+              status: childJob.status ?? item.status,
+            }))
+        })
+      }
+    }
+
+    const deduplicatedJobs = Array.from(
+      new Map(
+        normalizedJobs.map((item) => [item.id, item] as const)
+      ).values()
+    )
+
+    setJobs(deduplicatedJobs)
+    await setCacheItem(todayJobsCacheKey, deduplicatedJobs)
     setLoadingJobs(false)
   }
 
-  async function loadSelectedJobDetail(jobId: string) {
+  async function loadSelectedJobDetail(jobId: string, assignmentId: string) {
     if (!profileId) return
 
     setLoadingSelectedJob(true)
@@ -685,21 +786,11 @@ export default function HomeScreen() {
         id,
         profile_id,
         work_started_at,
-        work_completed_at,
-        jobs (
-          id,
-          title,
-          description,
-          address,
-          start_at,
-          end_at,
-          status,
-          company_id
-        )
+        work_completed_at
       `
       )
       .eq('profile_id', profileId)
-      .eq('job_id', jobId)
+      .eq('id', assignmentId)
       .maybeSingle()
 
     if (error) {
@@ -718,17 +809,39 @@ export default function HomeScreen() {
       return
     }
 
-    const job = getSingleJob(data?.jobs)
+    const { data: jobData, error: jobError } = await supabase
+      .from('jobs')
+      .select('id, title, description, address, start_at, end_at, status, company_id')
+      .eq('id', jobId)
+      .maybeSingle()
 
-    if (!data || !job || job.company_id !== companyId) {
+    if (jobError) {
+      console.error('Chyba pÅ™i naÄÃ­tÃ¡nÃ­ pracovnÃ­ zakÃ¡zky:', jobError)
+
+      const cachedJobDetail = await getCacheItem<SelectedJobDetail>(
+        OFFLINE_KEYS.jobDetail(jobId)
+      )
+      const cachedChecklist = await getCacheItem<SelectedChecklistItem[]>(
+        OFFLINE_KEYS.jobChecklist(jobId)
+      )
+
+      setSelectedJobDetail(cachedJobDetail ?? null)
+      setSelectedChecklistItems(cachedChecklist ?? [])
+      setLoadingSelectedJob(false)
+      return
+    }
+
+    if (!data || !jobData || jobData.company_id !== companyId) {
       Alert.alert('Chyba', 'Zakázka nebyla nalezena.')
       setLoadingSelectedJob(false)
       return
     }
 
+    const job = jobData
+
     const detail: SelectedJobDetail = {
       assignmentId: data.id,
-      id: job.id,
+      id: jobData.id,
       title: job.title ?? 'Zakázka bez názvu',
       description: job.description ?? null,
       address: job.address ?? null,
@@ -738,6 +851,13 @@ export default function HomeScreen() {
       work_started_at: data.work_started_at ?? null,
       work_completed_at: data.work_completed_at ?? null,
     }
+
+    detail.title = jobData.title ?? detail.title
+    detail.description = jobData.description ?? detail.description
+    detail.address = jobData.address ?? detail.address
+    detail.start_at = jobData.start_at ?? detail.start_at
+    detail.end_at = jobData.end_at ?? detail.end_at
+    detail.status = jobData.status ?? detail.status
 
     setSelectedJobDetail(detail)
     await setCacheItem(OFFLINE_KEYS.jobDetail(jobId), detail)
@@ -787,13 +907,16 @@ export default function HomeScreen() {
     setLoadingSelectedJob(false)
   }
 
-  async function openJobDetail(jobId: string) {
-    setSelectedJobId(jobId)
-    await loadSelectedJobDetail(jobId)
+  async function openJobDetail(job: AssignedJob) {
+    setSelectedJobTarget({
+      assignmentId: job.assignmentId,
+      jobId: job.id,
+    })
+    await loadSelectedJobDetail(job.id, job.assignmentId)
   }
 
   function closeJobDetail() {
-    setSelectedJobId(null)
+    setSelectedJobTarget(null)
     setSelectedJobDetail(null)
     setSelectedChecklistItems([])
     setLoadingSelectedJob(false)
@@ -816,14 +939,14 @@ export default function HomeScreen() {
     setJobs(updatedJobs)
     await setCacheItem(todayJobsCacheKey, updatedJobs)
 
-    if (selectedJobDetail?.assignmentId === assignmentId && selectedJobId) {
+    if (selectedJobDetail?.assignmentId === assignmentId && selectedJobTarget?.jobId) {
       const updatedDetail: SelectedJobDetail = {
         ...selectedJobDetail,
         ...updates,
       }
 
       setSelectedJobDetail(updatedDetail)
-      await setCacheItem(OFFLINE_KEYS.jobDetail(selectedJobId), updatedDetail)
+      await setCacheItem(OFFLINE_KEYS.jobDetail(selectedJobTarget.jobId), updatedDetail)
     }
   }
 
@@ -890,8 +1013,8 @@ export default function HomeScreen() {
     })
     await loadTodayJobs()
 
-    if (selectedJobDetail?.assignmentId === assignmentId && selectedJobId) {
-      await loadSelectedJobDetail(selectedJobId)
+    if (selectedJobDetail?.assignmentId === assignmentId && selectedJobTarget?.jobId) {
+      await loadSelectedJobDetail(selectedJobTarget.jobId, assignmentId)
     }
 
     setSavingJobId(null)
@@ -958,8 +1081,8 @@ export default function HomeScreen() {
     })
     await loadTodayJobs()
 
-    if (selectedJobDetail?.assignmentId === assignmentId && selectedJobId) {
-      await loadSelectedJobDetail(selectedJobId)
+    if (selectedJobDetail?.assignmentId === assignmentId && selectedJobTarget?.jobId) {
+      await loadSelectedJobDetail(selectedJobTarget.jobId, assignmentId)
     }
 
     setSavingJobId(null)
@@ -967,7 +1090,7 @@ export default function HomeScreen() {
   }
 
   async function toggleChecklistItem(itemId: string, currentValue: boolean) {
-    if (!selectedJobId) return
+    if (!selectedJobTarget?.jobId) return
 
     setSavingChecklistItemId(itemId)
 
@@ -991,7 +1114,7 @@ export default function HomeScreen() {
         )
 
         setSelectedChecklistItems(updatedItems)
-        await setCacheItem(OFFLINE_KEYS.jobChecklist(selectedJobId), updatedItems)
+        await setCacheItem(OFFLINE_KEYS.jobChecklist(selectedJobTarget.jobId), updatedItems)
 
         await refreshOfflineQueueSummary()
         setSavingChecklistItemId(null)
@@ -1032,7 +1155,7 @@ export default function HomeScreen() {
     )
 
     setSelectedChecklistItems(updatedItems)
-    await setCacheItem(OFFLINE_KEYS.jobChecklist(selectedJobId), updatedItems)
+    await setCacheItem(OFFLINE_KEYS.jobChecklist(selectedJobTarget.jobId), updatedItems)
 
     setSavingChecklistItemId(null)
   }
@@ -1050,8 +1173,8 @@ export default function HomeScreen() {
     loadActiveShift()
     loadTodayJobs()
 
-    if (selectedJobId) {
-      loadSelectedJobDetail(selectedJobId)
+    if (selectedJobTarget) {
+      loadSelectedJobDetail(selectedJobTarget.jobId, selectedJobTarget.assignmentId)
     }
   }, [syncTick])
 
@@ -1066,7 +1189,7 @@ export default function HomeScreen() {
   const shiftIsEndedOffline = !!activeShift?.ended_at
   const hasOfflineQueueItems = offlineQueueSummary.total > 0
 
-  if (selectedJobId) {
+  if (selectedJobTarget) {
     const selectedJobState = getAssignmentWorkState(selectedJobDetail)
     const isSavingSelectedJob =
       savingJobId !== null && savingJobId === selectedJobDetail?.assignmentId
@@ -1151,9 +1274,13 @@ export default function HomeScreen() {
                 {selectedJobDetail.title ?? 'Zakázka'}
               </Text>
 
-              <Text style={{ fontSize: 14, color: '#555', marginBottom: 8 }}>
-                Adresa: {selectedJobDetail.address ?? 'Bez adresy'}
-              </Text>
+                <Text style={{ fontSize: 14, color: '#555', marginBottom: 8 }}>
+                  Adresa: {selectedJobDetail.address ?? 'Bez adresy'}
+                </Text>
+
+                <Text style={{ fontSize: 14, color: '#555', marginBottom: 8 }}>
+                  ID zakázky: {selectedJobDetail.id}
+                </Text>
 
               <Text style={{ fontSize: 14, color: '#555', marginBottom: 8 }}>
                 Začátek: {formatDateTime(selectedJobDetail.start_at)}
@@ -1716,9 +1843,9 @@ export default function HomeScreen() {
                     {job.title ?? 'Zakázka'}
                   </Text>
 
-                  <Text style={{ fontSize: 14, color: '#555', marginBottom: 4 }}>
-                    {job.address ?? 'Bez adresy'}
-                  </Text>
+                    <Text style={{ fontSize: 14, color: '#555', marginBottom: 4 }}>
+                      {job.address ?? 'Bez adresy'}
+                    </Text>
 
                   <Text style={{ fontSize: 14, color: '#555', marginBottom: 4 }}>
                     {formatDateTime(job.start_at)}
@@ -1743,7 +1870,7 @@ export default function HomeScreen() {
 
                   <View style={{ gap: 10 }}>
                     <Pressable
-                      onPress={() => openJobDetail(job.id)}
+                        onPress={() => openJobDetail(job)}
                       style={{
                         backgroundColor: '#111827',
                         borderRadius: 12,
