@@ -16,6 +16,42 @@ import { supabase } from './supabase'
 let isSyncRunning = false
 const MAX_ACTION_RETRY_COUNT = 3
 
+function formatSyncError(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+
+  if (error && typeof error === 'object') {
+    const item = error as Record<string, any>
+    const parts = [
+      item.message,
+      item.error_description,
+      item.details,
+      item.hint,
+      item.code ? `kód ${item.code}` : null,
+      item.status ? `HTTP ${item.status}` : null,
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+
+    if (parts.length > 0) {
+      return parts.join(' | ')
+    }
+
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return 'Neznámá chyba synchronizace.'
+    }
+  }
+
+  const text = String(error)
+  return text === '[object Object]' ? 'Neznámá chyba synchronizace.' : text
+}
+
+function isMissingColumnError(error: any, columnName: string) {
+  const message = `${error?.message ?? ''} ${error?.details ?? ''}`.toLowerCase()
+  return error?.code === '42703' && message.includes(columnName.toLowerCase())
+}
+
 function base64ToArrayBuffer(base64: string) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
   const sanitized = base64.replace(/[^A-Za-z0-9+/=]/g, '')
@@ -286,6 +322,7 @@ async function processUploadJobPhoto(action: PendingAction) {
     local_id,
     company_id,
     job_id,
+    uploaded_by,
     photo_type,
     file_name,
     mime_type,
@@ -344,25 +381,35 @@ async function processUploadJobPhoto(action: PendingAction) {
     throw thumbError
   }
 
-  const { error: rowError } = await supabase.from('job_photos').upsert(
-    {
-      id: photo_id,
-      company_id,
-      job_id,
-      photo_type,
-      storage_path,
-      thumb_storage_path,
-      file_name: file_name ?? `${photo_id}.jpg`,
-      mime_type: mime_type ?? 'image/jpeg',
-      size_bytes: size_bytes ?? 0,
-      thumb_size_bytes: thumb_size_bytes ?? 0,
-      taken_at,
-      created_at: created_at ?? new Date().toISOString(),
-    },
-    {
+  const rowPayload = {
+    id: photo_id,
+    company_id,
+    job_id,
+    uploaded_by: uploaded_by ?? null,
+    photo_type,
+    storage_path,
+    thumb_storage_path,
+    file_name: file_name ?? `${photo_id}.jpg`,
+    mime_type: mime_type ?? 'image/jpeg',
+    size_bytes: size_bytes ?? 0,
+    thumb_size_bytes: thumb_size_bytes ?? 0,
+    taken_at,
+    created_at: created_at ?? new Date().toISOString(),
+  }
+
+  let { error: rowError } = await supabase.from('job_photos').upsert(rowPayload, {
+    onConflict: 'id',
+  })
+
+  if (rowError && isMissingColumnError(rowError, 'uploaded_by')) {
+    const { uploaded_by: _uploadedBy, ...fallbackPayload } = rowPayload
+
+    const fallbackResult = await supabase.from('job_photos').upsert(fallbackPayload, {
       onConflict: 'id',
-    }
-  )
+    })
+
+    rowError = fallbackResult.error
+  }
 
   if (rowError) {
     throw rowError
@@ -441,11 +488,12 @@ export async function syncPendingActions() {
 
         if (nextAction.type === 'upload_job_photo') {
           const { job_id, local_id } = nextAction.payload ?? {}
+          const errorMessage = formatSyncError(error)
 
           if (job_id && local_id) {
             await updateJobPhotoRecord(job_id, local_id, {
               uploadStatus: 'failed',
-              errorMessage: error instanceof Error ? error.message : String(error),
+              errorMessage,
             })
           }
         }
@@ -453,7 +501,7 @@ export async function syncPendingActions() {
         await updatePendingAction(nextAction.id, {
           status: 'failed',
           retry_count: (nextAction.retry_count ?? 0) + 1,
-          last_error: error instanceof Error ? error.message : String(error),
+          last_error: formatSyncError(error),
         })
 
         break

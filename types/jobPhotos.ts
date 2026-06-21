@@ -12,6 +12,7 @@ export type JobPhotoRecord = {
   localId: string
   companyId: string
   jobId: string
+  uploadedByProfileId?: string | null
   photoType: JobPhotoType
   fileName: string
   mimeType: string
@@ -34,6 +35,7 @@ export type JobPhotoQueuePayload = {
   local_id: string
   company_id: string
   job_id: string
+  uploaded_by?: string | null
   photo_type: JobPhotoType
   file_name: string
   mime_type: string

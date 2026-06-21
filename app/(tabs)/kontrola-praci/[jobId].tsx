@@ -9,6 +9,7 @@ import {
     Text,
     View,
 } from 'react-native'
+import { JobPhotoSection } from '../../../components/job-photos/JobPhotoSection'
 import { useAppSession } from '../../../contexts/AppSessionContext'
 import { supabase } from '../../../lib/supabase'
 
@@ -16,6 +17,7 @@ type JobDetail = {
   id: string
   company_id: string | null
   title: string | null
+  description: string | null
   status: string
   address: string | null
   start_at: string | null
@@ -25,23 +27,27 @@ type JobDetail = {
 type AssignmentRow = {
   id: string
   job_id: string
-  profile_id: string
+  profile_id: string | null
   work_started_at: string | null
   work_completed_at: string | null
   labor_hours: number | string | null
   hourly_rate: number | string | null
-  profiles:
-    | {
-        id: string
-        full_name: string | null
-        email: string | null
-      }
-    | {
-        id: string
-        full_name: string | null
-        email: string | null
-      }[]
-    | null
+  profiles?: ProfileRow | null
+}
+
+type ProfileRow = {
+  id: string
+  full_name: string | null
+  email?: string | null
+  auth_user_id?: string | null
+  default_hourly_rate?: number | string | null
+}
+
+type ChecklistItemView = {
+  id: string
+  label: string
+  isCompleted: boolean
+  raw: Record<string, any>
 }
 
 function formatDateTime(value: string | null) {
@@ -66,6 +72,24 @@ function toNumber(value: number | string | null | undefined) {
   return Number.isFinite(num) ? num : 0
 }
 
+function formatMoney(value: number) {
+  return new Intl.NumberFormat('cs-CZ', {
+    style: 'currency',
+    currency: 'CZK',
+    maximumFractionDigits: 2,
+  }).format(value)
+}
+
+function getEffectiveHourlyRate(item: AssignmentRow) {
+  const assignmentRate = toNumber(item.hourly_rate)
+
+  if (assignmentRate > 0) {
+    return assignmentRate
+  }
+
+  return toNumber(item.profiles?.default_hourly_rate)
+}
+
 function diffHours(startValue: string | null, endValue: string | null) {
   if (!startValue) return 0
 
@@ -86,11 +110,32 @@ function formatHours(hours: number) {
 }
 
 function getProfile(item: AssignmentRow) {
-  if (Array.isArray(item.profiles)) {
-    return item.profiles[0] ?? null
-  }
-
   return item.profiles ?? null
+}
+
+function getChecklistLabel(item: Record<string, any>, index: number) {
+  return (
+    item.title ??
+    item.label ??
+    item.text ??
+    item.name ??
+    item.item_title ??
+    item.description ??
+    `Položka ${index + 1}`
+  )
+}
+
+function getChecklistCompleted(item: Record<string, any>) {
+  if (typeof item.is_completed === 'boolean') return item.is_completed
+  if (typeof item.is_done === 'boolean') return item.is_done
+  if (typeof item.completed === 'boolean') return item.completed
+  return false
+}
+
+function sortChecklist(a: Record<string, any>, b: Record<string, any>) {
+  const aOrder = a.sort_order ?? a.order_index ?? a.item_order ?? 0
+  const bOrder = b.sort_order ?? b.order_index ?? b.item_order ?? 0
+  return aOrder - bOrder
 }
 
 function getStatusLabel(status: string) {
@@ -114,12 +159,13 @@ export default function KontrolaPraciDetailScreen() {
 
   console.log('KONTROLA_PRACI_DETAIL_JOB_ID', jobId)
 
-  const { loading: sessionLoading, companyId, isAdmin } = useAppSession()
+  const { loading: sessionLoading, companyId, profileId, isAdmin, syncTick } = useAppSession()
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [job, setJob] = useState<JobDetail | null>(null)
   const [assignments, setAssignments] = useState<AssignmentRow[]>([])
+  const [checklistItems, setChecklistItems] = useState<ChecklistItemView[]>([])
   const [error, setError] = useState<string | null>(null)
 
   const loadDetail = useCallback(async () => {
@@ -140,7 +186,7 @@ export default function KontrolaPraciDetailScreen() {
     try {
       const { data: jobData, error: jobError } = await supabase
         .from('jobs')
-        .select('id, company_id, title, status, address, start_at, end_at')
+        .select('id, company_id, title, description, status, address, start_at, end_at')
         .eq('id', jobId)
         .eq('company_id', companyId)
         .single()
@@ -158,12 +204,7 @@ export default function KontrolaPraciDetailScreen() {
           work_started_at,
           work_completed_at,
           labor_hours,
-          hourly_rate,
-          profiles (
-            id,
-            full_name,
-            email
-          )
+          hourly_rate
         `)
         .eq('job_id', jobId)
         .order('work_started_at', { ascending: true })
@@ -172,8 +213,74 @@ export default function KontrolaPraciDetailScreen() {
         throw assignmentError
       }
 
+      const nextAssignments = (assignmentData ?? []) as AssignmentRow[]
+      const profileIds = Array.from(
+        new Set(nextAssignments.map((item) => item.profile_id).filter(Boolean))
+      ) as string[]
+
+      const profileMap = new Map<string, ProfileRow>()
+
+      if (profileIds.length > 0) {
+        const { data: profileRows, error: profileError } = await supabase
+          .from('profiles')
+          .select('id, full_name, auth_user_id, default_hourly_rate')
+          .in('id', profileIds)
+
+        if (profileError) {
+          console.error('KONTROLA_PRACI_PROFILE_LOAD_ERROR', profileError)
+        } else {
+          for (const profile of profileRows ?? []) {
+            profileMap.set(profile.id, {
+              id: profile.id,
+              full_name: profile.full_name,
+              email: profile.auth_user_id ?? null,
+              auth_user_id: profile.auth_user_id ?? null,
+              default_hourly_rate: profile.default_hourly_rate ?? null,
+            })
+          }
+        }
+      }
+
+      const { data: checklistRows, error: checklistError } = await supabase
+        .from('job_checklists')
+        .select('id')
+        .eq('job_id', jobId)
+
+      if (checklistError) {
+        console.error('KONTROLA_PRACI_CHECKLIST_LOAD_ERROR', checklistError)
+      }
+
+      const checklistIds = checklistError ? [] : checklistRows?.map((row: any) => row.id) ?? []
+      let nextChecklistItems: ChecklistItemView[] = []
+
+      if (checklistIds.length > 0) {
+        const { data: itemRows, error: itemError } = await supabase
+          .from('job_checklist_items')
+          .select('*')
+          .in('checklist_id', checklistIds)
+
+        if (itemError) {
+          console.error('KONTROLA_PRACI_CHECKLIST_ITEMS_LOAD_ERROR', itemError)
+        } else {
+          nextChecklistItems = ((itemRows ?? []) as Record<string, any>[])
+            .sort(sortChecklist)
+            .map((item, index) => ({
+              id: item.id,
+              label: getChecklistLabel(item, index),
+              isCompleted: getChecklistCompleted(item),
+              raw: item,
+            }))
+        }
+      }
+
       setJob(jobData as JobDetail)
-      setAssignments((assignmentData ?? []) as AssignmentRow[])
+      setAssignments(
+        nextAssignments.map((item) => ({
+          ...item,
+          profiles: item.profile_id ? profileMap.get(item.profile_id) ?? null : null,
+        }))
+      )
+      setChecklistItems(nextChecklistItems)
     } catch (err: any) {
       console.error('KONTROLA_PRACI_LOAD_DETAIL_ERROR', err)
       setError(err?.message ?? 'Nepodařilo se načíst detail zakázky.')
@@ -197,11 +304,18 @@ export default function KontrolaPraciDetailScreen() {
           : diffHours(item.work_started_at, item.work_completed_at)
 
       const isRunning = !!item.work_started_at && !item.work_completed_at
+      const hourlyRate = getEffectiveHourlyRate(item)
 
       return {
         ...item,
-        profileName: profile?.full_name || profile?.email || 'Neznámý pracovník',
+        profileName:
+          profile?.full_name ||
+          profile?.email ||
+          profile?.auth_user_id ||
+          (item.profile_id ? `Profil ${item.profile_id.slice(0, 8)}` : 'Neznámý pracovník'),
         trackedHours,
+        hourlyRate,
+        payAmount: trackedHours * hourlyRate,
         isRunning,
       }
     })
@@ -209,6 +323,10 @@ export default function KontrolaPraciDetailScreen() {
 
   const totalHours = useMemo(() => {
     return assignmentRows.reduce((sum, row) => sum + row.trackedHours, 0)
+  }, [assignmentRows])
+
+  const totalPay = useMemo(() => {
+    return assignmentRows.reduce((sum, row) => sum + row.payAmount, 0)
   }, [assignmentRows])
 
   const updateJobStatus = useCallback(
@@ -448,6 +566,26 @@ export default function KontrolaPraciDetailScreen() {
               padding: 12,
               borderWidth: 1,
               borderColor: '#e2e8f0',
+              marginBottom: 12,
+            }}
+          >
+            <Text style={{ fontSize: 13, color: '#64748b', marginBottom: 6 }}>
+              Instrukce od admina
+            </Text>
+            <Text style={{ fontSize: 15, color: '#0f172a', lineHeight: 22 }}>
+              {job.description?.trim()
+                ? job.description
+                : 'K této zakázce zatím nejsou zadané žádné instrukce.'}
+            </Text>
+          </View>
+
+          <View
+            style={{
+              backgroundColor: '#f8fafc',
+              borderRadius: 12,
+              padding: 12,
+              borderWidth: 1,
+              borderColor: '#e2e8f0',
             }}
           >
             <Text style={{ fontSize: 13, color: '#64748b', marginBottom: 6 }}>
@@ -456,7 +594,80 @@ export default function KontrolaPraciDetailScreen() {
             <Text style={{ fontSize: 24, fontWeight: '800', color: '#0f172a' }}>
               {formatHours(totalHours)}
             </Text>
+            <Text style={{ marginTop: 8, fontSize: 14, color: '#475569' }}>
+              Odměna celkem: {formatMoney(totalPay)}
+            </Text>
           </View>
+        </View>
+
+        <JobPhotoSection
+          companyId={companyId}
+          jobId={job.id}
+          uploadedByProfileId={profileId}
+          syncTick={syncTick}
+        />
+
+        <View
+          style={{
+            backgroundColor: '#ffffff',
+            borderRadius: 16,
+            padding: 16,
+            borderWidth: 1,
+            borderColor: '#e2e8f0',
+            marginBottom: 14,
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 18,
+              fontWeight: '700',
+              color: '#0f172a',
+              marginBottom: 14,
+            }}
+          >
+            Checklist
+          </Text>
+
+          {checklistItems.length === 0 ? (
+            <Text style={{ fontSize: 14, color: '#475569' }}>
+              K této zakázce zatím není checklist.
+            </Text>
+          ) : (
+            <View style={{ gap: 10 }}>
+              {checklistItems.map((item, index) => (
+                <View
+                  key={item.id}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: item.isCompleted ? '#86efac' : '#e2e8f0',
+                    borderRadius: 12,
+                    padding: 12,
+                    backgroundColor: item.isCompleted ? '#ecfdf5' : '#f8fafc',
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: '700',
+                      color: '#0f172a',
+                      textDecorationLine: item.isCompleted ? 'line-through' : 'none',
+                    }}
+                  >
+                    {index + 1}. {item.label}
+                  </Text>
+                  <Text
+                    style={{
+                      marginTop: 4,
+                      fontSize: 13,
+                      color: item.isCompleted ? '#166534' : '#64748b',
+                    }}
+                  >
+                    {item.isCompleted ? 'Splněno' : 'Čeká'}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
 
         <View
@@ -586,6 +797,14 @@ export default function KontrolaPraciDetailScreen() {
 
               <Text style={{ fontSize: 14, color: '#475569', marginBottom: 4 }}>
                 Hodiny: {formatHours(item.trackedHours)}
+              </Text>
+
+              <Text style={{ fontSize: 14, color: '#475569', marginBottom: 4 }}>
+                Sazba: {formatMoney(item.hourlyRate)} / h
+              </Text>
+
+              <Text style={{ fontSize: 14, color: '#475569', marginBottom: 4 }}>
+                Odměna: {formatMoney(item.payAmount)}
               </Text>
 
               <Text

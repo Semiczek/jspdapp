@@ -264,6 +264,10 @@ export default function HomeScreen() {
     setManualSyncing(true)
 
     try {
+      if (offlineQueueSummary.failed > 0) {
+        await resetFailedActionsToPending()
+      }
+
       await syncPendingActions()
       await refreshOfflineQueueSummary()
       await loadActiveShift()
@@ -1359,6 +1363,7 @@ export default function HomeScreen() {
             <JobPhotoSection
               companyId={companyId}
               jobId={selectedJobDetail.id}
+              uploadedByProfileId={profileId}
               syncTick={syncTick}
               onPhotosChanged={refreshOfflineQueueSummary}
             />
@@ -1592,7 +1597,9 @@ export default function HomeScreen() {
               lineHeight: 20,
             }}
           >
-            Jakmile bude internet dostupný, aplikace to zkusí znovu automaticky.
+            {offlineQueueSummary.failed > 0
+              ? 'Aplikace je online, ale některá uložená akce selhala opakovaně. Tlačítko Synchronizovat teď ji zkusí odeslat znovu.'
+              : 'Jakmile bude internet dostupný, aplikace to zkusí znovu automaticky.'}
           </Text>
 
           {!!offlineQueueSummary.latestFailedError && (

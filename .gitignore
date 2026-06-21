@@ -41,6 +41,7 @@ expo-tunnel.log
 *.tsbuildinfo
 
 app-example
+artifacts/
 
 # generated native folders
 /ios

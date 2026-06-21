@@ -37,6 +37,7 @@ import type { JobPhotoRecord, JobPhotoType } from '../../types/jobPhotos'
 type JobPhotoSectionProps = {
   companyId: string
   jobId: string
+  uploadedByProfileId?: string | null
   syncTick?: number
   onPhotosChanged?: () => Promise<void> | void
 }
@@ -90,6 +91,7 @@ function getUploadPreferenceHint(preference: JobPhotoUploadPreference) {
 export function JobPhotoSection({
   companyId,
   jobId,
+  uploadedByProfileId = null,
   syncTick = 0,
   onPhotosChanged,
 }: JobPhotoSectionProps) {
@@ -212,6 +214,7 @@ export function JobPhotoSection({
       const { record, queuePayload } = await createJobPhotoFromAsset({
         companyId,
         jobId,
+        uploadedByProfileId,
         photoType,
         asset,
       })
@@ -243,7 +246,7 @@ export function JobPhotoSection({
         throw error
       }
     },
-    [companyId, jobId, maybeRunSync, onPhotosChanged, refreshRecords]
+    [companyId, jobId, maybeRunSync, onPhotosChanged, refreshRecords, uploadedByProfileId]
   )
 
   const handlePickerResult = useCallback(

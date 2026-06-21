@@ -47,6 +47,32 @@ function createActionId() {
   return `action_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
 }
 
+function normalizeLastError(value: unknown) {
+  if (!value) return null
+
+  if (typeof value === 'string') {
+    return value === '[object Object]' ? 'Neznámá chyba synchronizace.' : value
+  }
+
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, any>
+    const parts = [
+      item.message,
+      item.error_description,
+      item.details,
+      item.hint,
+      item.code ? `kód ${item.code}` : null,
+      item.status ? `HTTP ${item.status}` : null,
+    ].filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+
+    if (parts.length > 0) {
+      return parts.join(' | ')
+    }
+  }
+
+  return 'Neznámá chyba synchronizace.'
+}
+
 function normalizePendingAction(action: any): PendingAction | null {
   if (!action || typeof action !== 'object') return null
   if (typeof action.id !== 'string') return null
@@ -64,7 +90,7 @@ function normalizePendingAction(action: any): PendingAction | null {
     created_at: action.created_at,
     status,
     retry_count: Number.isFinite(action.retry_count) ? Number(action.retry_count) : 0,
-    last_error: typeof action.last_error === 'string' ? action.last_error : null,
+    last_error: normalizeLastError(action.last_error),
   }
 }
 

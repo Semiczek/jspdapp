@@ -311,6 +311,10 @@ export default function JobDetailScreen() {
     setManualSyncing(true)
 
     try {
+      if (offlineQueueSummary.failed > 0) {
+        await resetFailedActionsToPending()
+      }
+
       await syncPendingActions()
       await refreshOfflineQueueSummary()
       await loadData()
@@ -807,6 +811,7 @@ export default function JobDetailScreen() {
         <JobPhotoSection
           companyId={companyId}
           jobId={job.id}
+          uploadedByProfileId={profileId}
           syncTick={syncTick}
           onPhotosChanged={refreshOfflineQueueSummary}
         />

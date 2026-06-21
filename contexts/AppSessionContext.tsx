@@ -35,6 +35,14 @@ type AppSessionContextValue = {
 
 const AppSessionContext = createContext<AppSessionContextValue | undefined>(undefined)
 
+function isAdminRole(role: string | null) {
+  const normalizedRole = role?.trim().toLowerCase().replace(/[-\s]+/g, '_') ?? ''
+
+  return ['super_admin', 'company_admin', 'admin', 'owner', 'company_owner'].includes(
+    normalizedRole
+  )
+}
+
 export function AppSessionProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [session, setSession] = useState<Session | null>(null)
@@ -223,7 +231,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   }
 
   const role = membership?.role ?? null
-  const isAdmin = role === 'super_admin' || role === 'company_admin'
+  const isAdmin = isAdminRole(role)
 
   const value = useMemo<AppSessionContextValue>(
     () => ({

@@ -181,10 +181,11 @@ export async function updateJobPhotoRecord(
 export async function createJobPhotoFromAsset(params: {
   companyId: string
   jobId: string
+  uploadedByProfileId?: string | null
   photoType: JobPhotoType
   asset: ImagePickerAsset
 }) {
-  const { companyId, jobId, photoType, asset } = params
+  const { companyId, jobId, uploadedByProfileId, photoType, asset } = params
 
   if (!asset.uri) {
     throw new Error('Vybraná fotka nemá lokální URI.')
@@ -231,14 +232,15 @@ export async function createJobPhotoFromAsset(params: {
   const fileName = sanitizeFileName(
     `${(asset.fileName ?? photoId).replace(/\.[^.]+$/, '')}.jpg`
   )
-  const storagePath = `${companyId}/${jobId}/${photoType}/display/${photoId}.jpg`
-  const thumbStoragePath = `${companyId}/${jobId}/${photoType}/thumb/${photoId}.jpg`
+  const storagePath = `${jobId}/${photoType}/display/${photoId}.jpg`
+  const thumbStoragePath = `${jobId}/${photoType}/thumb/${photoId}.jpg`
 
   const record: JobPhotoRecord = {
     id: photoId,
     localId,
     companyId,
     jobId,
+    uploadedByProfileId: uploadedByProfileId ?? null,
     photoType,
     fileName,
     mimeType: 'image/jpeg',
@@ -264,6 +266,7 @@ export async function createJobPhotoFromAsset(params: {
     local_id: record.localId,
     company_id: record.companyId,
     job_id: record.jobId,
+    uploaded_by: record.uploadedByProfileId ?? null,
     photo_type: record.photoType,
     file_name: record.fileName,
     mime_type: record.mimeType,

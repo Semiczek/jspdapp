@@ -31,6 +31,33 @@ export default function TabsLayout() {
       />
 
       <Tabs.Screen
+        name="documents/index"
+        options={{
+          title: 'Dokumenty',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="document-text" size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: 'Profil',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="person-circle" size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="documents/[documentId]"
+        options={{
+          href: null,
+        }}
+      />
+
+      <Tabs.Screen
         name="kontrola-praci/index"
         options={{
           href: null,
